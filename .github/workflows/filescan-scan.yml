@@ -1,0 +1,102 @@
+name: FileScan.IO Scan
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MAX_FILESCAN_FILES: "5"
+
+jobs:
+  changed-file-scan:
+    name: Scan changed risky files
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Select changed files
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_ref="origin/${{ github.base_ref }}"
+            git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          else
+            base_ref="${{ github.event.before }}"
+            if [[ -z "$base_ref" || "$base_ref" =~ ^0+$ ]]; then
+              base_ref="$(git rev-list --max-parents=0 HEAD)"
+            fi
+          fi
+
+          python3 - "$base_ref" "${{ github.sha }}" <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          base_ref, head_ref = sys.argv[1], sys.argv[2]
+          max_files = int(os.environ.get("MAX_FILESCAN_FILES", "5"))
+          excluded_paths = {
+              ".github/scripts/filescan_scan.py",
+          }
+          excluded_prefixes = (
+              "tests/",
+          )
+          risky_suffixes = {
+              ".7z", ".apk", ".ash", ".bash", ".bat", ".bin", ".cmd", ".deb",
+              ".elf", ".exe", ".gz", ".ipk", ".js", ".mjs", ".ps1", ".py",
+              ".rar", ".rpm", ".sh", ".so", ".tar", ".tgz", ".txz", ".xz",
+              ".zip",
+          }
+
+          changed = subprocess.check_output(
+              ["git", "diff", "--name-only", "--diff-filter=ACMRT", base_ref, head_ref],
+              text=True,
+          ).splitlines()
+
+          selected = []
+          for name in changed:
+              if name in excluded_paths:
+                  print(f"Skipping FileScan helper: {name}")
+                  continue
+              if name.startswith(excluded_prefixes):
+                  print(f"Skipping test fixture/script: {name}")
+                  continue
+              path = Path(name)
+              if path.is_file() and path.suffix.lower() in risky_suffixes:
+                  selected.append(path.as_posix())
+
+          if len(selected) > max_files:
+              print(f"Selected {len(selected)} risky files; scanning first {max_files}.")
+              selected = selected[:max_files]
+
+          Path(".filescan-files").write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
+          if selected:
+              print("Files selected for FileScan.IO:")
+              for item in selected:
+                  print(f"- {item}")
+          else:
+              print("No changed risky files selected for FileScan.IO.")
+          PY
+
+      - name: Scan selected files with FileScan.IO
+        if: hashFiles('.filescan-files') != ''
+        env:
+          FILESCAN_API_KEY: ${{ secrets.FILESCAN_API_KEY }}
+        shell: bash
+        run: |
+          if [[ ! -s .filescan-files ]]; then
+            echo "No files selected for FileScan.IO." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          xargs -r -d '\n' python3 .github/scripts/filescan_scan.py \
+            --max-files "$MAX_FILESCAN_FILES" \
+            --inter-scan-delay 5 \
+            < .filescan-files

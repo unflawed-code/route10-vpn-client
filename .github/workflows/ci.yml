@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Shell syntax and validation matrix
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t shell_files < <(git ls-files '*.sh')
+          for file in "${shell_files[@]}"; do
+            echo "bash -n $file"
+            bash -n "$file"
+          done
+
+      - name: Run validation matrix
+        shell: bash
+        run: sh tests/validation-matrix-test.sh
