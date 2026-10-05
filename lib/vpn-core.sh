@@ -1525,9 +1525,10 @@ vpn_core_discover_client_ipv6() {
                         [ "$map_iface" = "$iface" ] || exit 0
 
                         local new_rule="${ipv6_addr}/128"
+                        local match_addr="${ipv6_addr%/*}"
                         
                         # Check if rule already exists to avoid log spam/redundant calls
-                        if ! ip -6 rule show | grep -q "$new_rule"; then
+                        if ! ip -6 rule show 2>/dev/null | grep -q "from $match_addr"; then
                             logger -t vpn-core "[$iface] Routing client IPv6 $new_rule (matched $matched_subnet)"
                             ip -6 rule add from "$new_rule" lookup "$rt" priority "$rt" 2>/dev/null
                             
@@ -1563,8 +1564,14 @@ vpn_core_find_interface_for_ip() {
 
 _vpn_core_tunnel_is_up() {
     local iface="$1"
-    ip link show "$iface" >/dev/null 2>&1 || return 1
-    ip link show "$iface" 2>/dev/null | grep -q "state DOWN" && return 1
+    local dev="$iface"
+    if ! ip link show "$dev" >/dev/null 2>&1; then
+        local ovpn_dev
+        ovpn_dev=$(uci -q get "openvpn.${iface}.dev" 2>/dev/null || true)
+        [ -n "$ovpn_dev" ] && dev="$ovpn_dev" || dev="tun_${iface}"
+    fi
+    ip link show "$dev" >/dev/null 2>&1 || return 1
+    ip link show "$dev" 2>/dev/null | grep -q "state DOWN" && return 1
     return 0
 }
 

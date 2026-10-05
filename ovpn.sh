@@ -293,6 +293,16 @@ ovpn_setup() {
     DNS_SERVERS=$(echo "$DNS_SERVERS" | tr ',' ' ')
 
     # 1. Lifecycle: Init
+    db_init 2>/dev/null || true
+    local was_committed=0
+    local old_targets=""
+    local existing_data
+    existing_data=$(db_get_interface "$iface" 2>/dev/null || true)
+    if [ -n "$existing_data" ]; then
+        was_committed=$(echo "$existing_data" | cut -d'|' -f8)
+        old_targets=$(echo "$existing_data" | cut -d'|' -f5)
+    fi
+
     vpn_core_init "$iface" "openvpn" "$config" "$table" "$targets" "$DNS_SERVERS" || return 1
     
     # 2. UCI Setup
@@ -307,6 +317,15 @@ ovpn_setup() {
     # 4. Lifecycle: Stage Assets (Generates hotplugs)
     vpn_core_stage_assets "$iface" "$table" "$targets" "$DNS_SERVERS" "$IPV6_SUPPORTED" "" "$nat66_enabled" || return 1
     
+    if [ "$was_committed" = "1" ] && _vpn_core_tunnel_is_up "$iface"; then
+        db_commit_interface "$iface"
+        if [ "$old_targets" != "$targets" ]; then
+            db_set_target_only "$iface" 1
+        else
+            db_set_target_only "$iface" 0
+        fi
+    fi
+
     echo "OpenVPN setup complete for $iface"
 }
 

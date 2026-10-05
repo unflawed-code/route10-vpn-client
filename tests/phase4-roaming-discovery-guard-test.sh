@@ -103,7 +103,7 @@ ip() {
     fi
     if [ "$1" = "-6" ] && [ "$2" = "rule" ] && [ "$3" = "show" ]; then
         if [ "$RULE_PRESENT" = "1" ]; then
-            echo "1000: from 2a02:6ea0:d802:6235::13/128 lookup 1000"
+            echo "1000: from 2a02:6ea0:d802:6235::13 lookup 1000"
         fi
         return 0
     fi
@@ -158,6 +158,16 @@ vpn_core_discover_client_ipv6 "wgtest" "1000" "aa:bb:cc:dd:ee:ff" "2001:db8:1::/
 wait
 rule_adds="$(grep -c 'ip:-6 rule add from ' "$TEST_LOG" 2>/dev/null || true)"
 assert_ge "$rule_adds" 1 "NAT66=1 allows auto IPv6 discovery fallback"
+
+# Case 4: Existing rule without /128 is recognized and does not re-add or log redundant rules.
+: > "$TEST_LOG"
+RULE_PRESENT=1
+MAC_QUERY_MODE="active"
+NEIGH_ROWS="2a02:6ea0:d802:6235::13 dev br-lan lladdr aa:bb:cc:dd:ee:ff REACHABLE"
+vpn_core_discover_client_ipv6 "wgtest" "1000" "aa:bb:cc:dd:ee:ff" "2001:db8:1::/64" "1"
+wait
+dup_rule_adds="$(grep -c 'ip:-6 rule add from ' "$TEST_LOG" 2>/dev/null || true)"
+assert_eq "0" "$dup_rule_adds" "existing host rule without /128 prevents duplicate rule adds"
 
 echo "-----------------------------"
 echo "Passed: $PASS"

@@ -494,6 +494,16 @@ wg_setup() {
     esac
     
     # 1. Lifecycle: Init (register in DB)
+    db_init 2>/dev/null || true
+    local was_committed=0
+    local old_targets=""
+    local existing_data
+    existing_data=$(db_get_interface "$iface" 2>/dev/null || true)
+    if [ -n "$existing_data" ]; then
+        was_committed=$(echo "$existing_data" | cut -d'|' -f8)
+        old_targets=$(echo "$existing_data" | cut -d'|' -f5)
+    fi
+
     vpn_core_init "$iface" "wireguard" "$config" "$table" "$targets" "$DNS_SERVERS" || return 1
     db_set_ipv6_profile "$iface" "$ipv6_mode" "$ipv6_routed_prefix" "$ipv6_downstream_iface"
     db_set_ipv6_health "$iface" "unknown" ""
@@ -513,6 +523,15 @@ wg_setup() {
     # Setup NAT66 if needed (Core does basic NAT66 call in Configure, but we can add WG specifics if any)
     # VPN Core vpn_core_configure already updates DB with NAT66 settings which hotplug uses.
     
+    if [ "$was_committed" = "1" ] && _vpn_core_tunnel_is_up "$iface"; then
+        db_commit_interface "$iface"
+        if [ "$old_targets" != "$targets" ]; then
+            db_set_target_only "$iface" 1
+        else
+            db_set_target_only "$iface" 0
+        fi
+    fi
+
     echo "WireGuard setup complete for $iface"
 }
 
