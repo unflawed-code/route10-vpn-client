@@ -134,9 +134,12 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           asset="${GITHUB_REPOSITORY##*/}-${tag}.tar.gz"
 
-          notes_args=(--generate-notes)
+          # --notes/--notes-file work for both create and edit; --generate-notes
+          # is create-only and would break the edit path below.
           if [ -f "docs/releases/${tag}.md" ]; then
             notes_args=(--notes-file "docs/releases/${tag}.md")
+          else
+            notes_args=(--notes "Release artifacts for ${tag}.")
           fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
