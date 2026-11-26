@@ -41,7 +41,18 @@ there rather than in `conf/`: `conf/` is not tracked, so a key placed there
 would never reach a release tarball and a fresh install could never verify an
 update.
 
-Per release:
+Per release, once the release workflow has published the archive:
+
+```bash
+./scripts/sign-release-asset.sh vX.Y.Z
+```
+
+That downloads the *published* asset (a local rebuild can differ in bytes),
+checks it against `SHA256SUMS`, signs it, uploads the `.sig`, then re-downloads
+the signature and verifies it with the same vendored check the routers run.
+Re-running is the fix after the workflow re-uploads the archive.
+
+To sign a local file without touching a release, use `sign-release.sh`:
 
 ```bash
 ./scripts/sign-release.sh dist/route10-vpn-client-vX.Y.Z.tar.gz
