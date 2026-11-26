@@ -406,11 +406,22 @@ perform_update() {
     return 0
 }
 
+# Auto-update is only as good as the cron entry that runs it, and a missing
+# entry fails silently: the device just never checks again.
+warn_if_auto_update_unscheduled() {
+    [ "${VPN_ENABLE_AUTO_UPDATE:-1}" = "1" ] || return 0
+    cron_file="${CRON_FILE:-/etc/crontabs/root}"
+    if [ ! -f "$cron_file" ] || ! grep -qF "${REMOTE_DIR}/scripts/updater.sh check" "$cron_file" 2>/dev/null; then
+        log "WARNING: auto-update is enabled but no cron entry runs ${REMOTE_DIR}/scripts/updater.sh; run setup.sh --non-interactive to install it"
+    fi
+}
+
 check_and_update() {
     local force="${1:-0}"
     local local_version
     local latest_tag
 
+    warn_if_auto_update_unscheduled
     local_version="$(get_local_version)"
     reconcile_version_parity "$local_version"
     local_version="$PARITY_VERSION"

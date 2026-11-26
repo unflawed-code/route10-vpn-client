@@ -34,6 +34,23 @@ jobs:
           cd lib/vendor
           sha256sum -c route10-signature.sh.sha256
 
+      # project.conf is preserved across updates, so a release can never repair
+      # a missing key: the devices just stop verifying, permanently.
+      - name: Verify the update trust anchor is present
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -c '. ./project.conf; printf "%s\n" "${VPN_UPDATE_PUBKEY:-}"' > /tmp/trust-anchor.pem
+          if [ ! -s /tmp/trust-anchor.pem ]; then
+            echo "ERROR: VPN_UPDATE_PUBKEY is empty in project.conf" >&2
+            exit 1
+          fi
+          if ! openssl pkey -pubin -in /tmp/trust-anchor.pem -noout; then
+            echo "ERROR: VPN_UPDATE_PUBKEY is not a valid PEM public key" >&2
+            exit 1
+          fi
+          echo "update trust anchor present and parses"
+
       - name: Run validation matrix
         shell: bash
         run: sh tests/validation-matrix-test.sh
