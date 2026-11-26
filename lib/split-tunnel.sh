@@ -5,14 +5,22 @@
 # This script is called by the protocol wrappers (wg.sh/ovpn.sh) when
 # running in split-tunnel mode (-d/--domains).
 
-# Source core library if not already sourced
-if [ -z "$VPN_CORE_LOADED" ]; then
-    SCRIPT_DIR="$(dirname "$0")"
-    if [ -f "$SCRIPT_DIR/vpn-core.sh" ]; then
-        . "$SCRIPT_DIR/vpn-core.sh"
-    elif [ -f "$SCRIPT_DIR/../lib/vpn-core.sh" ]; then
-        . "$SCRIPT_DIR/../lib/vpn-core.sh"
+# Source core library if not already sourced.
+# The core is resolved only from an explicitly known project layout ($LIB_DIR
+# or $VPN_BASE_DIR) and never from $0. When this file is sourced, $0 is the
+# calling wrapper (wg.sh/ovpn.sh), so a $0-relative guess would pick up any
+# stale vpn-core.sh sitting beside that wrapper and shadow the real core.
+if [ -z "${VPN_CORE_LOADED:-}" ]; then
+    _split_core_lib=""
+    if [ -n "${LIB_DIR:-}" ] && [ -f "$LIB_DIR/vpn-core.sh" ]; then
+        _split_core_lib="$LIB_DIR/vpn-core.sh"
+    elif [ -n "${VPN_BASE_DIR:-}" ] && [ -f "$VPN_BASE_DIR/lib/vpn-core.sh" ]; then
+        _split_core_lib="$VPN_BASE_DIR/lib/vpn-core.sh"
     fi
+    if [ -n "$_split_core_lib" ]; then
+        . "$_split_core_lib"
+    fi
+    unset _split_core_lib
 fi
 
 # Log helper

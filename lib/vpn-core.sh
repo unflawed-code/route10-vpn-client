@@ -6,7 +6,7 @@
 # === PATHS ===
 
 # Base directory discovery
-if [ -z "$VPN_BASE_DIR" ]; then
+if [ -z "${VPN_BASE_DIR:-}" ]; then
     # When sourced, $0 is the calling script. Assume it sits in the project root.
     VPN_BASE_DIR="$(dirname "$(readlink -f "$0")")"
     # If the calling script is in a subdirectory (like tests), adjust or fallback
@@ -356,7 +356,8 @@ ip6tables -w -F $KS_CHAIN 2>/dev/null
 ip route flush table $ROUTING_TABLE 2>/dev/null
 ip route add default dev $VPN_INTERFACE table $ROUTING_TABLE
 [ "$IPV6_SUPPORTED" = "1" ] && ip -6 route add default dev $VPN_INTERFACE table $ROUTING_TABLE
-# IPv4-only tunnels: block IPv6 from target subnets on their LAN interface.
+# IPv4-only tunnels: block IPv6 for every managed target on its LAN interface.
+# Host targets carry no IPv6 source to match, so they are scoped by client MAC.
 if [ "$IPV6_SUPPORTED" != "1" ]; then
     IPV4_ONLY_CHAIN="${VPN_INTERFACE}_ipv4_only_block"
     ip6tables -w -N "$IPV4_ONLY_CHAIN" 2>/dev/null || ip6tables -w -F "$IPV4_ONLY_CHAIN"
@@ -374,6 +375,36 @@ if [ "$IPV6_SUPPORTED" != "1" ]; then
                         ip6tables -w -C "$IPV4_ONLY_CHAIN" -i "$lan_dev" -j DROP 2>/dev/null || \
                             ip6tables -w -A "$IPV4_ONLY_CHAIN" -i "$lan_dev" -j DROP
                     fi
+                fi
+                ;;
+            *:*)
+                # Bare IPv6/MAC targets are covered by the DHCP/MAC path.
+                ;;
+            *)
+                # Host target: its IPv6 traffic carries a different source
+                # address than the routed IPv4 target, so scope by client MAC.
+                lan_dev=$(ip -4 route get "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+                [ -n "$lan_dev" ] || lan_dev=$(ip neigh show "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+                mac=$(ip neigh show "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="lladdr"){print $(i+1); exit}}')
+                if [ -z "$mac" ] && [ -n "$lan_dev" ]; then
+                    ping -c 1 -W 1 "$target" >/dev/null 2>&1 || true
+                    mac=$(ip neigh show "$target" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="lladdr"){print $(i+1); exit}}')
+                fi
+                if [ -z "$mac" ]; then
+                    for lease_file in /tmp/dhcp.leases /var/dhcp.leases /cfg/dhcp.leases; do
+                        [ -f "$lease_file" ] || continue
+                        mac=$(awk -v ip="$target" '$3 == ip { print $2; exit }' "$lease_file" 2>/dev/null)
+                        [ -n "$mac" ] && break
+                    done
+                fi
+                case "$mac" in
+                    ''|*[!0-9a-fA-F:]*) mac="" ;;
+                esac
+                if [ -n "$lan_dev" ] && [ -n "$mac" ]; then
+                    ip6tables -w -C "$IPV4_ONLY_CHAIN" -i "$lan_dev" -m mac --mac-source "$mac" -j DROP 2>/dev/null || \
+                        ip6tables -w -A "$IPV4_ONLY_CHAIN" -i "$lan_dev" -m mac --mac-source "$mac" -j DROP
+                else
+                    logger -t vpn-core "[$VPN_INTERFACE] WARNING: cannot scope IPv6 block for host target $target; IPv6 egress unprotected until the client is seen"
                 fi
                 ;;
         esac
@@ -1734,3 +1765,7 @@ vpn_core_handle_dhcp() {
     
     ip route flush cache
 }
+
+# Mark the core as loaded so dependents (e.g. lib/split-tunnel.sh) never
+# re-source a second, possibly stale, copy of this file.
+VPN_CORE_LOADED=1

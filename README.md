@@ -128,8 +128,10 @@ Most users only need these:
 | `VPN_PREFIX` | Runtime namespace for temp files, hotplug files, and marks |
 | `VPN_RT_START`, `VPN_RT_END` | Routing table allocation range |
 | `VPN_IPV6_MODE_DEFAULT` | Default IPv6 behavior: `nat66`, `routed-prefix`, or `disabled` |
-| `VPN_ENABLE_AUTO_UPDATE` | Enable script/rule auto-updates |
+| `VPN_ENABLE_AUTO_UPDATE` | Enable script/rule auto-updates (default `1`) |
 | `VPN_UPDATE_CRON` | Auto-update schedule |
+| `VPN_UPDATE_PINNED_SHA256` | Trust anchor: only apply a release archive with this digest |
+| `VPN_UPDATE_ALLOW_UNVERIFIED` | `1` skips provenance verification (not recommended; the release signature is still enforced) |
 
 Manual updater commands:
 
@@ -137,6 +139,37 @@ Manual updater commands:
 ./scripts/updater.sh check
 ./scripts/updater.sh force
 ```
+
+### Update security
+
+Updates are fetched from the tagged release assets and validated before
+anything is applied:
+
+1. TLS is always verified (no `--no-check-certificate`).
+2. The archive digest must match `SHA256SUMS` from the same release.
+3. The archive must carry a valid detached signature (`<asset>.sig`) from the
+   release signing key. The public key lives in `VPN_UPDATE_PUBKEY` in
+   `project.conf`, which is preserved across updates, so a bad release cannot
+   swap it. This check cannot be disabled.
+4. The archive must be covered by the release's SLSA provenance
+   (`.intoto.jsonl`): statement shape, `subject` name match, digest match, and
+   the source repository named in the attestation.
+5. The archive is rejected if it contains absolute paths, `..` traversal or
+   symlinks.
+6. Only after that is a backup taken and the tree replaced, with automatic
+   rollback on failure.
+
+The signature is the only check the repository cannot forge: the private key
+never exists in the repo or on GitHub, so a compromised repository can publish
+a new archive, `SHA256SUMS` and provenance, but cannot sign it. See
+[SUPPLY_CHAIN.md](SUPPLY_CHAIN.md) for the signing workflow.
+
+`VPN_UPDATE_PINNED_SHA256` remains available as a belt-and-braces anchor for a
+specific build; the verified digest is logged on every update so it can be
+pinned.
+
+Provenance verification requires `jq` on the router; signature verification
+requires `openssl`, which ships with OpenWrt.
 
 ## Plugins
 

@@ -13,7 +13,9 @@ fi
 
 LOG_FILE="/var/log/route10-vpn-client-updater.log"
 GITHUB_REPO="unflawed-code/route10-vpn-client"
+REPO_NAME="${GITHUB_REPO##*/}"
 LATEST_RELEASE_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+RELEASE_DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download"
 WEB_LATEST_URL="https://github.com/${GITHUB_REPO}/releases/latest"
 INSTALL_VERSION_FILE="${REMOTE_DIR}/.installed-version"
 
@@ -25,6 +27,40 @@ PARITY_VERSION=""
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] updater: $*" | tee -a "$LOG_FILE" >&2
 }
+
+# === TRUST POLICY ===
+# project.conf is preserved across updates, so a compromised release cannot
+# rewrite these values; they are the only anchors that survive a bad release.
+if [ -f "${REMOTE_DIR}/project.conf" ]; then
+    . "${REMOTE_DIR}/project.conf"
+fi
+PINNED_SHA256="${VPN_UPDATE_PINNED_SHA256:-}"
+ALLOW_UNVERIFIED="${VPN_UPDATE_ALLOW_UNVERIFIED:-0}"
+case "$ALLOW_UNVERIFIED" in
+    1) ;;
+    *) ALLOW_UNVERIFIED=0 ;;
+esac
+if [ -n "$PINNED_SHA256" ]; then
+    case "$PINNED_SHA256" in
+        *[!0-9a-fA-F]*)
+            log "WARNING: ignoring malformed VPN_UPDATE_PINNED_SHA256"
+            PINNED_SHA256=""
+            ;;
+        *)
+            if [ "${#PINNED_SHA256}" -ne 64 ]; then
+                log "WARNING: ignoring VPN_UPDATE_PINNED_SHA256 (expected 64 hex characters)"
+                PINNED_SHA256=""
+            fi
+            ;;
+    esac
+fi
+
+UPDATE_VERIFY_LIB="${REMOTE_DIR}/lib/update-verify.sh"
+if [ ! -f "$UPDATE_VERIFY_LIB" ]; then
+    log "ERROR: update verification library missing at $UPDATE_VERIFY_LIB"
+    exit 1
+fi
+. "$UPDATE_VERIFY_LIB"
 
 get_uci_installed_version() {
     command -v uci >/dev/null 2>&1 || return 0
@@ -39,8 +75,8 @@ set_uci_installed_version() {
         uci set vpn-client.system=system
     fi
     uci set vpn-client.system.version="$script_version"
-    uci set vpn-client.system.wireguard="$(sed -n 's/^WG_VERSION=\"\\(.*\\)\"/\\1/p' "${REMOTE_DIR}/wg.sh" | head -n 1 | tr -d '\r')"
-    uci set vpn-client.system.openvpn="$(sed -n 's/^OVPN_VERSION=\"\\(.*\\)\"/\\1/p' "${REMOTE_DIR}/ovpn.sh" | head -n 1 | tr -d '\r')"
+    uci set vpn-client.system.wireguard="$(sed -n 's/^WG_VERSION="\(.*\)"/\1/p' "${REMOTE_DIR}/wg.sh" | head -n 1 | tr -d '\r')"
+    uci set vpn-client.system.openvpn="$(sed -n 's/^OVPN_VERSION="\(.*\)"/\1/p' "${REMOTE_DIR}/ovpn.sh" | head -n 1 | tr -d '\r')"
     uci commit vpn-client >/dev/null 2>&1 || true
 }
 
@@ -85,25 +121,57 @@ reconcile_version_parity() {
     set_uci_installed_version "$PARITY_VERSION"
 }
 
+# Download $1 to $2. TLS verification is always on: never pass
+# --no-check-certificate, or a network attacker can substitute any payload.
+download() {
+    local url="$1"
+    local dest="$2"
+
+    case "$url" in
+        https://*) ;;
+        *)
+            log "ERROR: refusing non-https URL: $url"
+            return 1
+            ;;
+    esac
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL --proto '=https' --tlsv1.2 --retry 2 --connect-timeout 20 -o "$dest" "$url"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O "$dest" "$url"
+    else
+        log "ERROR: Neither curl nor wget is available."
+        return 1
+    fi
+}
+
 get_latest_version_tag() {
     local tag=""
 
-    if command -v wget >/dev/null 2>&1; then
-        tag=$(wget --no-check-certificate -qO- "$LATEST_RELEASE_URL" | sed -n 's/.*"tag_name": "\(.*\)".*/\1/p' | head -n 1)
-    elif command -v curl >/dev/null 2>&1; then
-        tag=$(curl -s "$LATEST_RELEASE_URL" | sed -n 's/.*"tag_name": "\(.*\)".*/\1/p' | head -n 1)
+    if command -v curl >/dev/null 2>&1; then
+        tag=$(curl -fsSL --proto '=https' --tlsv1.2 "$LATEST_RELEASE_URL" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+    elif command -v wget >/dev/null 2>&1; then
+        tag=$(wget -q -O - "$LATEST_RELEASE_URL" 2>/dev/null | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
     fi
 
     if [ -z "$tag" ]; then
         if command -v curl >/dev/null 2>&1; then
-            tag=$(curl -sIL "$WEB_LATEST_URL" | grep -i "^location:" | sed -n 's/.*\/tag\(s\)\?\/\([^[:space:]\r]*\).*/\2/p' | tail -n 1)
+            tag=$(curl -fsSIL --proto '=https' --tlsv1.2 "$WEB_LATEST_URL" 2>/dev/null | grep -i "^location:" | sed -n 's|.*/tag\(s\)\?/\([^[:space:]\r]*\).*|\2|p' | tail -n 1)
         elif command -v wget >/dev/null 2>&1; then
-            tag=$(wget --no-check-certificate -S --spider "$WEB_LATEST_URL" 2>&1 | grep -i "Location:" | sed -n 's/.*\/tag\(s\)\?\/\([^[:space:]\r]*\).*/\2/p' | tail -n 1)
+            tag=$(wget -S --spider "$WEB_LATEST_URL" 2>&1 | grep -i "Location:" | sed -n 's|.*/tag\(s\)\?/\([^[:space:]\r]*\).*|\2|p' | tail -n 1)
         fi
     fi
 
+    tag=$(printf '%s' "$tag" | tr -d '\r')
     [ -n "$tag" ] || return 1
-    echo "$tag" | tr -d '\r'
+
+    # The tag is interpolated into URLs and paths; never trust it blindly.
+    if ! update_is_safe_tag "$tag"; then
+        log "ERROR: refusing unsafe release tag: $tag"
+        return 1
+    fi
+
+    echo "$tag"
 }
 
 version_gt() {
@@ -179,38 +247,115 @@ ensure_project_script_permissions() {
 
 perform_update() {
     local latest_tag="$1"
-    local archive_url="https://github.com/${GITHUB_REPO}/archive/refs/tags/${latest_tag}.tar.gz"
+    local asset_name="${REPO_NAME}-${latest_tag}.tar.gz"
+    local release_url="${RELEASE_DOWNLOAD_URL}/${latest_tag}"
+    local backup_path="/tmp/route10-vpn-client-backup"
     local archive_path
+    local sums_path
+    local prov_path
+    local digest=""
+    local verify_out=""
+    local sig_path=""
+    local pubkey_path=""
     local extracted_root
     local keep_file
     local keep_target
 
     UPDATE_TMP_DIR="/tmp/route10-vpn-client-update"
-    UPDATE_BACKUP_DIR="/tmp/route10-vpn-client-backup"
-    archive_path="${UPDATE_TMP_DIR}/update.tar.gz"
+    UPDATE_BACKUP_DIR=""
+    archive_path="${UPDATE_TMP_DIR}/${asset_name}"
+    sums_path="${UPDATE_TMP_DIR}/SHA256SUMS"
+    prov_path="${UPDATE_TMP_DIR}/${asset_name}.intoto.jsonl"
 
-    rm -rf "$UPDATE_TMP_DIR" "$UPDATE_BACKUP_DIR"
-    mkdir -p "$UPDATE_TMP_DIR" "$UPDATE_BACKUP_DIR"
-
-    log "Creating backup at $UPDATE_BACKUP_DIR"
-    cp -rf "${REMOTE_DIR}/"* "$UPDATE_BACKUP_DIR/"
-
+    rm -rf "$UPDATE_TMP_DIR" "$backup_path"
+    mkdir -p "$UPDATE_TMP_DIR"
     trap cleanup_trap EXIT
 
-    log "Downloading ${archive_url}"
-    if command -v curl >/dev/null 2>&1; then
-        curl -sL "$archive_url" -o "$archive_path" || return 1
-    elif command -v wget >/dev/null 2>&1; then
-        wget --no-check-certificate -q "$archive_url" -O "$archive_path" || return 1
+    # Fetch the attested release asset, not GitHub's auto-generated
+    # /archive/refs/tags tarball (which is not covered by the provenance).
+    log "Fetching release ${latest_tag} from ${release_url}"
+    download "${release_url}/${asset_name}" "$archive_path" || {
+        log "ERROR: download failed: ${asset_name}"
+        return 1
+    }
+    download "${release_url}/SHA256SUMS" "$sums_path" || {
+        log "ERROR: download failed: SHA256SUMS"
+        return 1
+    }
+
+    if ! digest=$(update_verify_checksum "$archive_path" "$sums_path" "$asset_name"); then
+        log "ERROR: checksum verification failed: ${digest}"
+        return 1
+    fi
+    log "Checksum verified (sha256 ${digest})"
+
+    if [ -n "$PINNED_SHA256" ]; then
+        if [ "$PINNED_SHA256" != "$digest" ]; then
+            log "ERROR: pinned digest mismatch (expected ${PINNED_SHA256}, got ${digest}); refusing update"
+            return 1
+        fi
+        log "Pinned digest matched"
+    fi
+
+    # The release signature is the only check the repository cannot forge: the
+    # signing key never exists in the repo. Deliberately not bypassable by
+    # VPN_UPDATE_ALLOW_UNVERIFIED.
+    sig_path="${UPDATE_TMP_DIR}/${asset_name}.sig"
+    pubkey_path="${UPDATE_TMP_DIR}/release-pub.pem"
+    if [ -n "${VPN_UPDATE_PUBKEY:-}" ]; then
+        printf '%s\n' "$VPN_UPDATE_PUBKEY" > "$pubkey_path"
+    elif [ -f "${REMOTE_DIR}/conf/release-pub.pem" ]; then
+        pubkey_path="${REMOTE_DIR}/conf/release-pub.pem"
+    fi
+    download "${release_url}/${asset_name}.sig" "$sig_path" || {
+        log "ERROR: download failed: ${asset_name}.sig (release signature); refusing update"
+        return 1
+    }
+    if ! verify_out=$(update_verify_signature "$archive_path" "$sig_path" "$pubkey_path"); then
+        log "ERROR: release signature verification failed: ${verify_out}"
+        return 1
+    fi
+    log "Release signature verified (${asset_name})"
+
+    if [ "$ALLOW_UNVERIFIED" = "1" ]; then
+        log "WARNING: VPN_UPDATE_ALLOW_UNVERIFIED=1; skipping provenance verification"
     else
-        log "ERROR: Neither curl nor wget is available."
+        download "${release_url}/${asset_name}.intoto.jsonl" "$prov_path" || {
+            log "ERROR: download failed: ${asset_name}.intoto.jsonl (provenance)"
+            return 1
+        }
+        if ! verify_out=$(update_verify_provenance "$prov_path" "$asset_name" "$digest" "$GITHUB_REPO"); then
+            log "ERROR: provenance verification failed: ${verify_out}"
+            return 1
+        fi
+        log "Provenance verified for ${asset_name}"
+    fi
+
+    log "Extracting verified archive"
+    if ! verify_out=$(update_safe_extract "$archive_path" "${UPDATE_TMP_DIR}/extract"); then
+        log "ERROR: extraction refused: ${verify_out}"
         return 1
     fi
 
-    log "Extracting update archive"
-    tar -xzf "$archive_path" -C "$UPDATE_TMP_DIR" || return 1
-    extracted_root="$(ls -d "${UPDATE_TMP_DIR}/${GITHUB_REPO##*/}"* 2>/dev/null | head -n 1)"
-    [ -d "$extracted_root" ] || return 1
+    extracted_root="${UPDATE_TMP_DIR}/extract/${REPO_NAME}-${latest_tag}"
+    if [ ! -d "$extracted_root" ]; then
+        log "ERROR: expected archive root ${REPO_NAME}-${latest_tag} not found"
+        return 1
+    fi
+    if [ ! -f "${extracted_root}/setup.sh" ]; then
+        log "ERROR: update payload has no setup.sh"
+        return 1
+    fi
+
+    # Only back up once the artifact is known-good, so a bad download can never
+    # trigger a rollback that rewrites the live tree.
+    log "Creating backup at $backup_path"
+    mkdir -p "$backup_path"
+    if ! cp -rf "${REMOTE_DIR}/"* "$backup_path/"; then
+        log "ERROR: backup failed; aborting before applying any change"
+        return 1
+    fi
+    UPDATE_BACKUP_DIR="$backup_path"
 
     # Preserve local custom config before update apply.
     for keep_file in project.conf; do
@@ -250,7 +395,7 @@ perform_update() {
     printf '%s\n' "$latest_tag" > "$INSTALL_VERSION_FILE" 2>/dev/null || true
     set_uci_installed_version "$latest_tag"
     UPDATE_SUCCESS=1
-    log "Update to ${latest_tag} completed successfully."
+    log "Update to ${latest_tag} completed successfully (sha256 ${digest})."
     return 0
 }
 

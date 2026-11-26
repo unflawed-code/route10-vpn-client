@@ -1,0 +1,3 @@
+# Release signing key: never commit, keep it offline.
+.release-keys/
+*.sig

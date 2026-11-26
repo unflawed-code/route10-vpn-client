@@ -92,6 +92,12 @@ prepare_runtime_ovpn_config() {
     # Prevent provider-pushed redirect/routes from hijacking global router policy.
     sed -i '/^[[:space:]]*pull-filter[[:space:]]\+ignore[[:space:]]\+"redirect-gateway"[[:space:]]*$/d' "$runtime_conf"
     sed -i '/^[[:space:]]*pull-filter[[:space:]]\+ignore[[:space:]]\+"route "[[:space:]]*$/d' "$runtime_conf"
+
+    # Credentials are never stored in UCI or passed on a command line; when we
+    # have them they live in a 0600 auth file referenced from this config.
+    if [ -n "${OVPN_AUTH_FILE:-}" ]; then
+        sed -i '/^[[:space:]]*auth-user-pass\([[:space:]]\|$\)/d' "$runtime_conf"
+    fi
     {
         echo ""
         echo "# Route10 managed directives"
@@ -109,7 +115,13 @@ prepare_runtime_ovpn_config() {
             fi
             echo "${up_directive} \"$up_script\""
         fi
+        if [ -n "${OVPN_AUTH_FILE:-}" ]; then
+            echo "auth-user-pass \"$OVPN_AUTH_FILE\""
+        fi
     } >> "$runtime_conf"
+
+    # The generated config may reference credential material.
+    chmod 600 "$runtime_conf" 2>/dev/null || true
 
     echo "$runtime_conf"
     return 0
@@ -166,12 +178,32 @@ parse_ovpn_auth_credentials() {
     OVPN_AUTH_PASSWORD=$(echo "$OVPN_AUTH_PASSWORD" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 }
 
+# Write parsed credentials to a 0600 file for OpenVPN to read, so they never
+# end up in /etc/config/openvpn or in a process argument list.
+ovpn_write_auth_file() {
+    local iface="$1"
+    local auth_path
+
+    [ -n "$OVPN_AUTH_USERNAME" ] || return 0
+    [ -n "$OVPN_AUTH_PASSWORD" ] || return 0
+
+    auth_path="$SCRIPT_DIR/conf/.${VPN_PREFIX}_${iface}.auth"
+    mkdir -p "$(dirname "$auth_path")" 2>/dev/null || true
+    if ! ( umask 077; printf '%s\n%s\n' "$OVPN_AUTH_USERNAME" "$OVPN_AUTH_PASSWORD" > "$auth_path" ); then
+        return 1
+    fi
+    chmod 600 "$auth_path" 2>/dev/null || true
+    OVPN_AUTH_FILE="$auth_path"
+    return 0
+}
+
 parse_ovpn_config() {
     local config_file="$1"
     DNS_SERVERS=""
     IPV6_SUPPORTED=0
     OVPN_AUTH_USERNAME=""
     OVPN_AUTH_PASSWORD=""
+    OVPN_AUTH_FILE=""
     
     # Simple parser for DNS pushed from config or manual entries
     # In practice, OpenVPN gets DNS via DHCP/pushed options at runtime,
@@ -256,12 +288,10 @@ setup_uci_interface() {
     uci set openvpn.$iface.config="$config"
     uci set openvpn.$iface.dev="$tun_dev"
     uci set openvpn.$iface.dev_type='tun'
+    # Credentials are supplied through the 0600 auth file referenced by the
+    # runtime config, never through world-readable UCI.
     uci delete openvpn.$iface.username 2>/dev/null || true
     uci delete openvpn.$iface.password 2>/dev/null || true
-    if [ -n "$OVPN_AUTH_USERNAME" ] && [ -n "$OVPN_AUTH_PASSWORD" ]; then
-        uci set openvpn.$iface.username="$OVPN_AUTH_USERNAME"
-        uci set openvpn.$iface.password="$OVPN_AUTH_PASSWORD"
-    fi
 }
 
 # === MAIN SETUP ===
@@ -283,6 +313,10 @@ ovpn_setup() {
         # so routed clients require NAT66 for functional egress IPv6.
         nat66_enabled=1
     fi
+    ovpn_write_auth_file "$iface" || {
+        echo "Error: failed to write auth file for $iface"
+        return 1
+    }
     runtime_config="$(prepare_runtime_ovpn_config "$iface" "$config")" || {
         echo "Error: failed to prepare runtime OpenVPN config for $iface"
         return 1
@@ -359,6 +393,7 @@ ovpn_post_delete() {
     # Remove openvpn configuration section
     uci delete openvpn.$iface 2>/dev/null || true
     rm -f "$runtime_config" 2>/dev/null || true
+    rm -f "$SCRIPT_DIR/conf/.${VPN_PREFIX}_${iface}.auth" 2>/dev/null || true
     rm -f "/var/run/openvpn.${iface}.status" 2>/dev/null || true
     rm -f "/var/run/openvpn.${iface}.userpass" 2>/dev/null || true
     rm -f "/var/run/openvpn.${iface}.pass" 2>/dev/null || true

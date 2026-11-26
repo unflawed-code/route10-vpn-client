@@ -396,6 +396,38 @@ block_ipv6_on_lan_interface() {
         ip6tables -w -A "$chain" -i "$lan_if" $src_opt -j DROP
 }
 
+# Block IPv6 egress for a single host target on an IPv4-only tunnel.
+# A host target only gives us an IPv4 address, so its IPv6 traffic cannot be
+# matched by source address. Scope the drop by the client's MAC on the LAN
+# device it is reachable from instead.
+# Args: $1=interface, $2=host_ip
+# Returns: 0 when a rule was installed, 1 when the client MAC is unknown.
+block_ipv6_for_host_target() {
+    local interface="$1"
+    local host_ip="$2"
+    local chain="${interface}_ipv4_only_block"
+    local lan_dev=""
+    local mac=""
+
+    lan_dev=$(resolve_dev_from_target "$host_ip")
+    [ -n "$lan_dev" ] || return 1
+
+    mac=$(ip neigh show "$host_ip" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="lladdr"){print $(i+1); exit}}')
+    if [ -z "$mac" ] && type discover_mac_for_ip >/dev/null 2>&1; then
+        mac=$(discover_mac_for_ip "$host_ip" 1 2>/dev/null || true)
+    fi
+    if [ -z "$mac" ] && type resolve_mac_from_leases >/dev/null 2>&1; then
+        mac=$(resolve_mac_from_leases "$host_ip" 2>/dev/null || true)
+    fi
+    case "$mac" in
+        ''|*[!0-9a-fA-F:]*) return 1 ;;
+    esac
+
+    ip6tables -w -C "$chain" -i "$lan_dev" -m mac --mac-source "$mac" -j DROP 2>/dev/null || \
+        ip6tables -w -A "$chain" -i "$lan_dev" -m mac --mac-source "$mac" -j DROP
+    return 0
+}
+
 # === FWMARK CHAIN MANAGEMENT ===
 
 # Create a marking chain in mangle table
@@ -685,13 +717,26 @@ setup_ip_routing() {
                     [ "$ipv6" = "1" ] && add_to_ipset "$ipset_v6" "$actual_ip"
                     ;;
                 *)
-                    # If target is a subnet (contains /), check if we need to block IPv6 on the interface (if vpn is IPv4-only)
-                    if [ "$ipv6" = "0" ] && echo "$target" | grep -q "/"; then
-                         local lan_dev=$(resolve_dev_from_target "$target")
-                         if [ -n "$lan_dev" ]; then
-                             block_ipv6_on_lan_interface "$interface" "$lan_dev" "$target"
-                             ensure_local_src_rule "$lan_dev"
-                         fi
+                    # IPv4-only tunnel: block IPv6 for every managed target, not
+                    # just subnets. Host targets are scoped by MAC, since their
+                    # IPv6 traffic carries a different source address.
+                    if [ "$ipv6" = "0" ]; then
+                        case "$target" in
+                            */*)
+                                local lan_dev=$(resolve_dev_from_target "$target")
+                                if [ -n "$lan_dev" ]; then
+                                    block_ipv6_on_lan_interface "$interface" "$lan_dev" "$target"
+                                    ensure_local_src_rule "$lan_dev"
+                                fi
+                                ;;
+                            *:*)
+                                # Bare IPv6/MAC target: handled by the DHCP/MAC path.
+                                ;;
+                            *)
+                                block_ipv6_for_host_target "$interface" "$target" || \
+                                    echo "Warning: could not scope IPv6 block for host target $target (client MAC unknown)"
+                                ;;
+                        esac
                     fi
                     
                     add_to_ipset "$ipset_name" "$actual_ip"

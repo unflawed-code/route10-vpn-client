@@ -363,6 +363,19 @@ discover_mac_for_ip() {
     return 1
 }
 
+# Resolve the MAC for an IPv4 address from the DHCP lease table.
+# Works when the client is offline and has no ARP/neighbor entry.
+# Args: $1=ip
+# Returns: MAC or empty
+resolve_mac_from_leases() {
+    local ip="$1"
+    local lease_file
+    lease_file=$(get_dhcp_lease_file)
+    [ -n "$lease_file" ] || return 1
+    [ -f "$lease_file" ] || return 1
+    awk -v ip="$ip" '$3 == ip { print $2; exit }' "$lease_file" 2>/dev/null
+}
+
 # === CLIENT DISCOVERY ===
 
 # Discover clients in a subnet from DHCP leases and ARP table

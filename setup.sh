@@ -40,7 +40,7 @@ normalize_project_line_endings
 
 [ -f "${SCRIPT_DIR}/lib/project-config.sh" ] && . "${SCRIPT_DIR}/lib/project-config.sh"
 
-VPN_ENABLE_AUTO_UPDATE="${VPN_ENABLE_AUTO_UPDATE:-0}"
+VPN_ENABLE_AUTO_UPDATE="${VPN_ENABLE_AUTO_UPDATE:-1}"
 VPN_UPDATE_CRON="${VPN_UPDATE_CRON:-40 4 * * *}"
 UPDATER_CRON="${VPN_UPDATE_CRON} ${UPDATER_JOB_CMD}"
 INSTALL_VERSION_FILE="${SCRIPT_DIR}/.installed-version"

@@ -58,6 +58,21 @@ jobs:
           echo "archive_name=${name}.tar.gz" >> "$GITHUB_OUTPUT"
           sha256sum dist/*
 
+      # The release archive is built with `git archive`, which ships tracked
+      # files only. An untracked vendored verifier would be silently omitted
+      # and every device would refuse the update, so fail before publishing.
+      - name: Verify release archive contains the vendored verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="${{ steps.build.outputs.archive_name }}"
+          if ! tar -tzf "dist/${archive}" | grep -q '/lib/vendor/route10-signature\.sh$'; then
+            echo "ERROR: ${archive} is missing lib/vendor/route10-signature.sh" >&2
+            echo "Commit the vendored verifier before tagging a release." >&2
+            exit 1
+          fi
+          echo "vendored verifier present in ${archive}"
+
       - name: Generate SLSA subject
         id: hash
         shell: bash

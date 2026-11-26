@@ -91,6 +91,20 @@ assert_contains_file "$RUNTIME_CONF" 'pull-filter ignore "redirect-gateway"' "re
 assert_contains_file "$RUNTIME_CONF" 'pull-filter ignore "route "' "route pull-filter injected"
 assert_not_contains_file "$SOURCE_CONF" 'pull-filter ignore "route "' "source config remains unchanged"
 
+# Credentials must be referenced from the generated config, not embedded in UCI.
+OVPN_AUTH_FILE="$TMP_DIR/creds.auth"
+printf 'user\npass\n' > "$OVPN_AUTH_FILE"
+RUNTIME_CONF3="$(prepare_runtime_ovpn_config "ovpntest1" "$SOURCE_CONF")"
+assert_contains_file "$RUNTIME_CONF3" "auth-user-pass \"$OVPN_AUTH_FILE\"" "auth file referenced from runtime config"
+count_auth="$(grep -Fc 'auth-user-pass' "$RUNTIME_CONF3" 2>/dev/null || true)"
+if [ "$count_auth" = "1" ]; then
+    say_pass "runtime config references exactly one auth file"
+else
+    say_fail "runtime config references exactly one auth file"
+    echo "  count: $count_auth"
+fi
+unset OVPN_AUTH_FILE
+
 # Ensure no duplicate redirect-gateway directives after regeneration.
 RUNTIME_CONF2="$(prepare_runtime_ovpn_config "ovpntest1" "$SOURCE_CONF")"
 count_redirect="$(grep -Fc 'pull-filter ignore "redirect-gateway"' "$RUNTIME_CONF2" 2>/dev/null || true)"

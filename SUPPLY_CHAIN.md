@@ -21,6 +21,49 @@ SHA256SUMS
 *.intoto.jsonl
 ```
 
+## Signing A Release
+
+Every release archive is signed with a key that never exists in this repository
+or in CI. This is what stops a compromised repository from shipping code to the
+routers: the repository can produce a new archive, a matching `SHA256SUMS` and
+fresh provenance, but it cannot produce a valid signature.
+
+The signing key lives offline (`.release-keys/` is gitignored):
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out .release-keys/release-signing-key.pem
+openssl ec -in .release-keys/release-signing-key.pem -pubout
+```
+
+The printed public key goes into `VPN_UPDATE_PUBKEY` in `project.conf`, which
+is committed and is the only half that belongs on a router. It has to live
+there rather than in `conf/`: `conf/` is not tracked, so a key placed there
+would never reach a release tarball and a fresh install could never verify an
+update.
+
+Per release:
+
+```bash
+./scripts/sign-release.sh dist/route10-vpn-client-vX.Y.Z.tar.gz
+# -> dist/route10-vpn-client-vX.Y.Z.tar.gz.sig
+```
+
+The check itself is vendored from `route10-update-verifier` into
+`lib/vendor/route10-signature.sh`; refresh it with that repo's
+`scripts/sync-verifier.sh`, and CI rejects a hand-edited copy by digest.
+
+Upload the `.sig` next to the archive. `scripts/updater.sh` downloads it,
+verifies it with `openssl dgst -sha256 -verify` against `VPN_UPDATE_PUBKEY`, and
+refuses the update when the signature is missing or does not match. That check
+cannot be disabled.
+
+Because `project.conf` is preserved across updates, a bad release cannot
+replace the public key that validates it, so key rotation requires an explicit
+out-of-band edit of `VPN_UPDATE_PUBKEY` on the device.
+
+Releases published before the key existed carry no `.sig` and are refused, so
+`updater.sh force` cannot be used to reinstall an older unsigned tag.
+
 ## Verify A Release
 
 Install the GitHub CLI and `slsa-verifier`, then download and verify:

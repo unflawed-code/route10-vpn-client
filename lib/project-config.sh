@@ -17,14 +17,16 @@ VPN_IPV6_ROUTED_VERIFY_TIMEOUT_SEC="${VPN_IPV6_ROUTED_VERIFY_TIMEOUT_SEC:-5}"
 VPN_IPV6_ROUTED_VERIFY_RETRIES="${VPN_IPV6_ROUTED_VERIFY_RETRIES:-3}"
 VPN_IPV6_ROUTED_PROBE_ADDR="${VPN_IPV6_ROUTED_PROBE_ADDR:-2606:4700:4700::1111}"
 VPN_IPV6_FORCE_TAKEOVER="${VPN_IPV6_FORCE_TAKEOVER:-0}"
-VPN_ENABLE_AUTO_UPDATE="${VPN_ENABLE_AUTO_UPDATE:-0}"
+VPN_ENABLE_AUTO_UPDATE="${VPN_ENABLE_AUTO_UPDATE:-1}"
 VPN_UPDATE_CRON="${VPN_UPDATE_CRON:-40 4 * * *}"
+VPN_UPDATE_PINNED_SHA256="${VPN_UPDATE_PINNED_SHA256:-}"
+VPN_UPDATE_ALLOW_UNVERIFIED="${VPN_UPDATE_ALLOW_UNVERIFIED:-0}"
 
 # Resolve project root when not preset by caller.
-if [ -z "$VPN_BASE_DIR" ]; then
-    if [ -n "$SCRIPT_DIR" ] && [ -d "$SCRIPT_DIR" ]; then
+if [ -z "${VPN_BASE_DIR:-}" ]; then
+    if [ -n "${SCRIPT_DIR:-}" ] && [ -d "$SCRIPT_DIR" ]; then
         VPN_BASE_DIR="$SCRIPT_DIR"
-    elif [ -n "$LIB_DIR" ] && [ -d "$LIB_DIR" ]; then
+    elif [ -n "${LIB_DIR:-}" ] && [ -d "$LIB_DIR" ]; then
         VPN_BASE_DIR="$(dirname "$LIB_DIR")"
     else
         VPN_BASE_DIR="/cfg/vpn-custom"
@@ -130,8 +132,26 @@ esac
 
 case "$VPN_ENABLE_AUTO_UPDATE" in
     0|1) ;;
-    *) VPN_ENABLE_AUTO_UPDATE=0 ;;
+    *) VPN_ENABLE_AUTO_UPDATE=1 ;;
 esac
+
+case "$VPN_UPDATE_ALLOW_UNVERIFIED" in
+    0|1) ;;
+    *) VPN_UPDATE_ALLOW_UNVERIFIED=0 ;;
+esac
+
+
+# A pin is either empty or a full sha256 digest.
+if [ -n "$VPN_UPDATE_PINNED_SHA256" ]; then
+    case "$VPN_UPDATE_PINNED_SHA256" in
+        *[!0-9a-fA-F]*) VPN_UPDATE_PINNED_SHA256="" ;;
+        *)
+            if [ "${#VPN_UPDATE_PINNED_SHA256}" -ne 64 ]; then
+                VPN_UPDATE_PINNED_SHA256=""
+            fi
+            ;;
+    esac
+fi
 
 if ! is_valid_cron_schedule "$VPN_UPDATE_CRON"; then
     VPN_UPDATE_CRON="40 4 * * *"
