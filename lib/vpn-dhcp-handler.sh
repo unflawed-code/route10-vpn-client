@@ -10,8 +10,8 @@ VPN_CORE_LIB="VPN_CORE_LIB_PLACEHOLDER"
 VPN_TMP_DIR="VPN_TMP_DIR_PLACEHOLDER"
 LOCK_FILE="${VPN_TMP_DIR}/dhcp_hotplug.lock"
 mkdir -p "$VPN_TMP_DIR" 2>/dev/null || true
-exec 200>"$LOCK_FILE"
-flock -x 200 || exit 1
+exec 8>"$LOCK_FILE"
+flock -x 8 || exit 1
 
 # Storm guard:
 # - drops duplicate events in a very short interval
@@ -38,7 +38,7 @@ case "$SUPPRESS_UNTIL" in ''|*[!0-9]*) SUPPRESS_UNTIL=0 ;; esac
 
 if [ "$SUPPRESS_UNTIL" -gt "$NOW" ]; then
     logger -t vpn-dhcp-handler "Storm guard active; dropping DHCP event $EVENT_KEY"
-    flock -u 200
+    flock -u 8
     exit 0
 fi
 
@@ -46,7 +46,7 @@ if [ -f "$GUARD_LAST" ]; then
     IFS='|' read -r LAST_TS LAST_KEY < "$GUARD_LAST"
     case "$LAST_TS" in ''|*[!0-9]*) LAST_TS=0 ;; esac
     if [ "$LAST_KEY" = "$EVENT_KEY" ] && [ $((NOW - LAST_TS)) -lt "$DEDUP" ]; then
-        flock -u 200
+        flock -u 8
         exit 0
     fi
 fi
@@ -63,7 +63,7 @@ if [ "$COUNT" -gt "$BURST" ]; then
     SUPPRESS_UNTIL=$((NOW + COOLDOWN))
     printf "%s|%s|%s\n" "$WIN_START" "$COUNT" "$SUPPRESS_UNTIL" > "$GUARD_STATE"
     logger -t vpn-dhcp-handler "Storm guard tripped (count=$COUNT window=${WINDOW}s); cooling down ${COOLDOWN}s"
-    flock -u 200
+    flock -u 8
     exit 0
 fi
 
@@ -75,8 +75,8 @@ if [ -f "$VPN_CORE_LIB" ]; then
     vpn_core_handle_dhcp
 else
     logger -t vpn-dhcp-handler "Error: vpn-core.sh not found at $VPN_CORE_LIB"
-    flock -u 200
+    flock -u 8
     exit 1
 fi
 
-flock -u 200
+flock -u 8

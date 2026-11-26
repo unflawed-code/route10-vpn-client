@@ -403,9 +403,9 @@ VPN_DNSMASQ_SERVICE="DNSMASQ_SERVICE_PLACEHOLDER"
 SPLIT_LIB="SPLIT_LIB_PLACEHOLDER"
 mkdir -p "$VPN_TMP_DIR" 2>/dev/null || true
 LOCK_FILE="${VPN_TMP_DIR}/split_hotplug_${INTERFACE}.lock"
-exec 202>"$LOCK_FILE"
-flock -x 202 || exit 1
-trap 'flock -u 202' EXIT
+exec 7>"$LOCK_FILE"
+flock -x 7 || exit 1
+trap 'flock -u 7' EXIT
 
 # Per-interface hotplug storm guard.
 GUARD_STATE="${VPN_TMP_DIR}/split_${INTERFACE}.guard"

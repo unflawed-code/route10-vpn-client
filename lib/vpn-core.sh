@@ -293,9 +293,9 @@ vpn_core_generate_ifup_script() {
 VPN_TMP_DIR="VPN_TMP_DIR_PLACEHOLDER"
 mkdir -p "$VPN_TMP_DIR" 2>/dev/null || true
 LOCK_FILE="${VPN_TMP_DIR}/iface_routing.lock"
-exec 201>"$LOCK_FILE"
-flock -x 201 || exit 1
-trap 'flock -u 201' EXIT
+exec 9>"$LOCK_FILE"
+flock -x 9 || exit 1
+trap 'flock -u 9' EXIT
 VPN_INTERFACE="IFACE_PLACEHOLDER"
 ROUTING_TABLE="TABLE_PLACEHOLDER"
 VPN_IPS="TARGETS_PLACEHOLDER"

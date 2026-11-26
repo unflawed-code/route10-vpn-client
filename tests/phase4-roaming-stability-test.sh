@@ -105,7 +105,7 @@ fi
 dhcp_contents="$(cat "$dhcp_script" 2>/dev/null)"
 assert_not_contains "$dhcp_contents" "VPN_CORE_LIB_PLACEHOLDER" "VPN core lib placeholder is replaced"
 assert_not_contains "$dhcp_contents" "VPN_TMP_DIR_PLACEHOLDER" "VPN tmp dir placeholder is replaced"
-assert_contains "$dhcp_contents" "flock -x 200" "DHCP hotplug script includes lock-based serialization"
+assert_contains "$dhcp_contents" "flock -x 8" "DHCP hotplug script includes lock-based serialization"
 assert_contains "$dhcp_contents" "dhcp_hotplug.guard" "DHCP hotplug script includes storm guard state"
 
 db_get_mac_by_mac() { echo "${OLD_STATE:-}"; }
