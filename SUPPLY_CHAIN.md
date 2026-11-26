@@ -77,11 +77,68 @@ Releases published before the key existed carry no `.sig` and are refused, so
 
 ## Verify A Release
 
-Install the GitHub CLI and `slsa-verifier`, then download and verify:
+Two checks answer different questions, and you want both before running an
+archive on a router:
+
+- **Provenance** answers "did this archive come from this repository?"
+- **Signature** answers "did a human with the offline key approve it?"
+
+Provenance alone is not enough: a compromised repository can produce a fresh
+archive with valid provenance. Only the signature stops that, because the key
+is not in the repository or in CI.
+
+### 1. Check the signature
+
+Get the trusted public key from a device you already trust (or a checkout you
+already trust), **not** from the archive you are checking — verifying an archive
+against a key packed inside it proves nothing.
+
+```bash
+ssh root@<router> "sed -n -e \"s/^VPN_UPDATE_PUBKEY='//\" -e \"s/'\$//\" \
+  -e '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' \
+  /cfg/vpn-custom/project.conf" > release-pubkey.pem
+```
+
+Confirm it is the key you expect before trusting any result:
+
+```bash
+openssl pkey -pubin -in release-pubkey.pem -outform DER -out release-pubkey.der
+openssl dgst -sha256 release-pubkey.der
+```
+
+The digest must be:
+
+```text
+3543a2ef92610536bd8aba32a0774bc4a11ff46111f63d81d72d1a1c0cccf80b
+```
+
+If it differs, stop. Either the key was rotated out of band (`VPN_UPDATE_PUBKEY`
+is preserved across updates, so rotation is always a deliberate manual edit) or
+you have the wrong key.
+
+Then download the release and verify the archive:
 
 ```bash
 gh release download vX.Y.Z --repo unflawed-code/route10-vpn-client
 sha256sum -c SHA256SUMS
+openssl dgst -sha256 -verify release-pubkey.pem \
+  -signature route10-vpn-client-vX.Y.Z.tar.gz.sig \
+  route10-vpn-client-vX.Y.Z.tar.gz
+# Verified OK
+```
+
+`SHA256SUMS` alone only proves the download was not corrupted — an attacker who
+replaces the archive can replace `SHA256SUMS` too. The `.sig` is the part they
+cannot forge.
+
+Releases published before the signing key existed carry no `.sig`, and both the
+routers and this manual check will refuse them.
+
+### 2. Check the provenance
+
+Install the GitHub CLI and `slsa-verifier`, then:
+
+```bash
 slsa-verifier verify-artifact route10-vpn-client-vX.Y.Z.tar.gz \
   --provenance-path *.intoto.jsonl \
   --source-uri github.com/unflawed-code/route10-vpn-client \

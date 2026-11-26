@@ -18,6 +18,10 @@ from pathlib import Path
 
 
 API_BASE = "https://www.filescan.io"
+# Cloudflare fronts filescan.io and rejects the default Python-urllib agent
+# with a 403 before the request reaches the API (error code 1010), so identify
+# the client explicitly.
+USER_AGENT = "route10-vpn-client-ci/1.0 (+https://github.com/unflawed-code/route10-vpn-client)"
 DEFAULT_POLL_SECONDS = 15
 DEFAULT_MAX_POLLS = 40
 FAIL_VERDICTS = {"suspicious", "likely_malicious", "malicious"}
@@ -36,7 +40,7 @@ class FileScanClient:
         headers: dict[str, str] | None = None,
         retry_count: int = 0,
     ) -> dict[str, object]:
-        req_headers = {"X-Api-Key": self.api_key}
+        req_headers = {"X-Api-Key": self.api_key, "User-Agent": USER_AGENT}
         if headers:
             req_headers.update(headers)
         request = urllib.request.Request(
