@@ -132,20 +132,29 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
+          asset="${GITHUB_REPOSITORY##*/}-${tag}.tar.gz"
+
+          notes_args=(--generate-notes)
+          if [ -f "docs/releases/${tag}.md" ]; then
+            notes_args=(--notes-file "docs/releases/${tag}.md")
+          fi
+
           if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists; leaving its assets untouched so a"
-            echo "published signature is never invalidated by a re-upload."
-            exit 0
-          fi
-
-          notes="docs/releases/${tag}.md"
-          if [ -f "$notes" ]; then
-            gh release create "$tag" dist/* --draft --title "$tag" --notes-file "$notes"
+            have="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+            if printf '%s\n' "$have" | grep -qxF "$asset"; then
+              echo "Release $tag already carries $asset; leaving it untouched."
+              exit 0
+            fi
+            # The SLSA generator creates and publishes the release itself when
+            # it uploads provenance, so turn that into the draft the signing
+            # step expects instead of assuming we created it.
+            echo "Release $tag exists but has no archive; attaching it and going back to draft."
+            gh release upload "$tag" dist/* --clobber
+            gh release edit "$tag" --draft "${notes_args[@]}"
           else
-            echo "No $notes; falling back to generated notes." >&2
-            gh release create "$tag" dist/* --draft --title "$tag" --generate-notes
+            gh release create "$tag" dist/* --draft --title "$tag" "${notes_args[@]}"
           fi
 
-          echo "Draft release $tag created. Sign the asset, then publish:" 
+          echo "Draft release $tag is ready. Sign the asset, then publish:"
           echo "  ./scripts/sign-release-asset.sh $tag"
           echo "  gh release edit $tag --draft=false"
