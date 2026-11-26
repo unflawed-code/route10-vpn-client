@@ -121,14 +121,31 @@ jobs:
           name: release-artifacts
           path: dist
 
-      - name: Publish GitHub release assets
+      # The release is created as a draft on purpose: the archive is not
+      # downloadable by devices until a human signs it and publishes, so a
+      # release cannot go live without a signature.
+      - name: Create draft release with assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --notes "Automated release artifacts for ${GITHUB_REF_NAME}."
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving its assets untouched so a"
+            echo "published signature is never invalidated by a re-upload."
+            exit 0
           fi
-          gh release upload "${GITHUB_REF_NAME}" dist/* --clobber
+
+          notes="docs/releases/${tag}.md"
+          if [ -f "$notes" ]; then
+            gh release create "$tag" dist/* --draft --title "$tag" --notes-file "$notes"
+          else
+            echo "No $notes; falling back to generated notes." >&2
+            gh release create "$tag" dist/* --draft --title "$tag" --generate-notes
+          fi
+
+          echo "Draft release $tag created. Sign the asset, then publish:" 
+          echo "  ./scripts/sign-release-asset.sh $tag"
+          echo "  gh release edit $tag --draft=false"

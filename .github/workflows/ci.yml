@@ -37,3 +37,13 @@ jobs:
       - name: Run validation matrix
         shell: bash
         run: sh tests/validation-matrix-test.sh
+
+      # `/bin/sh` is dash on this runner, but say so explicitly: the generated
+      # hotplug scripts are executed directly through their shebang, and dash
+      # rejects shell features BusyBox ash accepts.
+      - name: Run validation matrix under dash
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v dash >/dev/null 2>&1 || { echo "dash is required" >&2; exit 1; }
+          dash tests/validation-matrix-test.sh
