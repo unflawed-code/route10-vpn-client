@@ -60,26 +60,12 @@ That split is the important part: adding another VPN type should mean writing or
 
 Every release archive is signed with a key that is not in this repository and
 not in CI, so a compromised repository cannot produce a release the routers
-will accept. Verify the archive before it goes near a device:
+will accept. The updater checks that signature on the device before applying
+anything, and refuses an update it cannot verify.
 
-```bash
-gh release download vX.Y.Z --repo unflawed-code/route10-vpn-client
-sha256sum -c SHA256SUMS
-openssl dgst -sha256 -verify release-pubkey.pem \
-  -signature route10-vpn-client-vX.Y.Z.tar.gz.sig \
-  route10-vpn-client-vX.Y.Z.tar.gz
-```
-
-`release-pubkey.pem` is the `VPN_UPDATE_PUBKEY` block from the router's own
-`project.conf` (or a checkout you already trust — never the archive you are
-checking). The DER-encoded key must hash to:
-
-```text
-3543a2ef92610536bd8aba32a0774bc4a11ff46111f63d81d72d1a1c0cccf80b
-```
-
-Releases also carry SLSA Build L3 provenance. See [SUPPLY_CHAIN.md](SUPPLY_CHAIN.md)
-for the exact commands, and for how to sign a release.
+To check an archive by hand before a first manual install, see
+[SUPPLY_CHAIN.md](SUPPLY_CHAIN.md), which also lists the signing key
+fingerprint and how to sign a release.
 
 ## Install
 
