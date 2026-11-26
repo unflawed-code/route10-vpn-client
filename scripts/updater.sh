@@ -307,6 +307,13 @@ perform_update() {
     elif [ -f "${REMOTE_DIR}/conf/release-pub.pem" ]; then
         pubkey_path="${REMOTE_DIR}/conf/release-pub.pem"
     fi
+    # Fails closed either way; this only turns a bare "public key is missing"
+    # into something an operator can act on, since project.conf is preserved
+    # across updates and will not gain the key from a release.
+    if [ ! -s "$pubkey_path" ]; then
+        log "ERROR: no release public key configured; add VPN_UPDATE_PUBKEY to ${REMOTE_DIR}/project.conf (or install ${REMOTE_DIR}/conf/release-pub.pem) and retry: refusing update"
+        return 1
+    fi
     download "${release_url}/${asset_name}.sig" "$sig_path" || {
         log "ERROR: download failed: ${asset_name}.sig (release signature); refusing update"
         return 1
