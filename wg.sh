@@ -2,7 +2,7 @@
 # ${VPN_PREFIX} VPN Client - WireGuard Implementation
 # WireGuard-specific setup that uses the VPN core lifecycle manager
 
-WG_VERSION="v1.2.0"
+WG_VERSION="v1.3.0"
 
 set -e
 

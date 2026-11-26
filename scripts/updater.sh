@@ -416,6 +416,44 @@ warn_if_auto_update_unscheduled() {
     fi
 }
 
+# Reports the three things that fail silently: which version is installed,
+# whether anything actually runs this script, and whether a key exists to
+# verify a release with. Exits non-zero when one of them is wrong.
+report_status() {
+    local_status=0
+
+    echo "version: $(get_local_version)"
+
+    if [ "${VPN_ENABLE_AUTO_UPDATE:-1}" = "1" ]; then
+        cron_file="${CRON_FILE:-/etc/crontabs/root}"
+        if [ -f "$cron_file" ] && grep -qF "${REMOTE_DIR}/scripts/updater.sh check" "$cron_file" 2>/dev/null; then
+            echo "auto-update: enabled (${VPN_UPDATE_CRON:-40 4 * * *}); cron entry present"
+        else
+            echo "auto-update: enabled (${VPN_UPDATE_CRON:-40 4 * * *}); NO CRON ENTRY (run setup.sh --non-interactive)"
+            local_status=1
+        fi
+    else
+        echo "auto-update: disabled"
+    fi
+
+    if [ -n "${VPN_UPDATE_PUBKEY:-}" ]; then
+        if printf '%s\n' "$VPN_UPDATE_PUBKEY" | openssl pkey -pubin -noout >/dev/null 2>&1; then
+            echo "trust anchor: present and parses"
+        else
+            echo "trust anchor: present but NOT a valid public key"
+            local_status=1
+        fi
+    elif [ -f "${REMOTE_DIR}/conf/release-pub.pem" ]; then
+        echo "trust anchor: ${REMOTE_DIR}/conf/release-pub.pem"
+    else
+        echo "trust anchor: MISSING (add VPN_UPDATE_PUBKEY to ${REMOTE_DIR}/project.conf)"
+        local_status=1
+    fi
+
+    echo "last log: $(tail -n 1 "$LOG_FILE" 2>/dev/null || echo 'none')"
+    return "$local_status"
+}
+
 check_and_update() {
     local force="${1:-0}"
     local local_version
@@ -442,8 +480,9 @@ cmd="${1:-check}"
 case "$cmd" in
     check) check_and_update 0 ;;
     force) check_and_update 1 ;;
+    status) report_status ;;
     *)
-        echo "Usage: $0 {check|force}"
+        echo "Usage: $0 {check|force|status}"
         exit 1
         ;;
 esac

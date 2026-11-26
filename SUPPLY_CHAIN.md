@@ -75,6 +75,40 @@ out-of-band edit of `VPN_UPDATE_PUBKEY` on the device.
 Releases published before the key existed carry no `.sig` and are refused, so
 `updater.sh force` cannot be used to reinstall an older unsigned tag.
 
+### Installing the key on an existing device
+
+A device installed before v1.2.0 has no `VPN_UPDATE_PUBKEY`. `project.conf` is
+preserved across updates and the key is never taken from a release, so such a
+device installs v1.2.0 and then refuses every later update until the key is
+added by hand. This is the one trust decision that cannot be delegated to a
+download.
+
+On the device, back up the file and append the block from this repository's
+`project.conf` (LF line endings, quotes included):
+
+```bash
+cd /cfg/vpn-custom
+cp -a project.conf project.conf.bak.$(date +%Y%m%d)
+
+VPN_UPDATE_PUBKEY='-----BEGIN PUBLIC KEY-----
+… the three lines from project.conf …
+-----END PUBLIC KEY-----'
+```
+
+Then confirm it parses and matches the expected fingerprint:
+
+```bash
+sh -c '. ./project.conf; printf "%s\n" "$VPN_UPDATE_PUBKEY"' > /tmp/pub.pem
+openssl pkey -pubin -in /tmp/pub.pem -outform DER -out /tmp/pub.der
+openssl dgst -sha256 /tmp/pub.der
+# 3543a2ef92610536bd8aba32a0774bc4a11ff46111f63d81d72d1a1c0cccf80b
+```
+
+`updater.sh status` reports whether the key is present and parses, alongside the
+installed version and whether a cron entry actually runs the updater. CI fails
+when `project.conf` in this repository loses the key, because a release can
+never repair that on a device.
+
 ## Verify A Release
 
 Two checks answer different questions, and you want both before running an

@@ -4,7 +4,7 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION="v1.2.0"
+VERSION="v1.3.0"
 CRON_FILE="/etc/crontabs/root"
 UPDATER_SCRIPT="${SCRIPT_DIR}/scripts/updater.sh"
 UPDATER_JOB_CMD="/bin/ash ${UPDATER_SCRIPT} check >/dev/null 2>&1"

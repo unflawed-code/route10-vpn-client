@@ -2,7 +2,7 @@
 # ${VPN_PREFIX} VPN Client - OpenVPN Implementation
 # OpenVPN-specific setup that uses the VPN core lifecycle manager
 
-OVPN_VERSION="v1.2.0"
+OVPN_VERSION="v1.3.0"
 
 set -e
 
