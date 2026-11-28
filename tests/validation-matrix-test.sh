@@ -21,6 +21,7 @@ run_test "wg/target-only-commit" "$PROJECT_ROOT/tests/wg/target-only-commit-test
 run_test "wg/split-lifecycle" "$PROJECT_ROOT/tests/wg/split-lifecycle-test.sh"
 run_test "core/tunnel-down-killswitch" "$PROJECT_ROOT/tests/core/tunnel-down-killswitch-test.sh"
 run_test "core/ipv4-only-host-target" "$PROJECT_ROOT/tests/core/ipv4-only-host-target-test.sh"
+run_test "core/killswitch-allow-tunnel" "$PROJECT_ROOT/tests/core/killswitch-allow-tunnel-test.sh"
 run_test "core/split-core-guard" "$PROJECT_ROOT/tests/core/split-core-guard-test.sh"
 run_test "core/updater-verify" "$PROJECT_ROOT/tests/core/updater-verify-test.sh"
 run_test "plugins/manage-commands-parity" "$PROJECT_ROOT/tests/plugins/manage-commands-parity-test.sh"

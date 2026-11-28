@@ -241,14 +241,96 @@ vpn_core_create_killswitch() {
     ip6tables -w -C FORWARD -j "$ks_chain" 2>/dev/null || ip6tables -w -I FORWARD 1 -j "$ks_chain"
 }
 
+# Tunnel egress device for an interface. WireGuard interfaces are their own
+# device; OpenVPN tunnels live on tun_* (or whatever uci configured).
+# Args: $1=interface
+# Returns: candidate device name (may not exist yet)
+_vpn_core_tunnel_dev() {
+    local iface="$1"
+    local dev="$iface"
+    if ip link show "$dev" >/dev/null 2>&1; then
+        echo "$dev"
+        return 0
+    fi
+    local ovpn_dev
+    ovpn_dev=$(uci -q get "openvpn.${iface}.dev" 2>/dev/null || true)
+    [ -n "$ovpn_dev" ] || ovpn_dev="tun_${iface}"
+    echo "$ovpn_dev"
+    return 0
+}
+
+# Match a bare MAC target, which carries no address the firewall can match on.
+# Args: $1=value
+# Returns: 0 when the value looks like a MAC address
+_vpn_core_looks_like_mac() {
+    case "$1" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) return 0 ;;
+    esac
+    return 1
+}
+
+# Fail closed for one client: allow it to egress through the tunnel device only.
+# Any packet that would leave via another interface (routing table being rebuilt,
+# tunnel dropped without an ifdown event, WAN fallback) is rejected.
+# Args: $1=interface, $2=client address
+_vpn_core_allow_tunnel_egress_only() {
+    local iface="$1"
+    local addr="$2"
+    local ks_chain="${iface}_killswitch"
+    local dev=""
+
+    [ -n "$addr" ] || return 1
+    _vpn_core_looks_like_mac "$addr" && return 1
+    case "$addr" in
+        ''|*[!0-9a-fA-F:./]*) return 1 ;;
+    esac
+
+    dev=$(_vpn_core_tunnel_dev "$iface")
+    [ -n "$dev" ] || return 1
+
+    # Same-LAN traffic never leaves the router, so it cannot leak the WAN
+    # address: let it fall through to the normal forwarding policy.
+    local lan_dev
+    lan_dev=$(ip -4 route get "$addr" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [ -n "$lan_dev" ] && [ "$lan_dev" != "$dev" ]; then
+        # Inserted at the head: LAN exemptions must always precede the
+        # tunnel-only rejects, whatever order the clients were added in.
+        iptables -w -C "$ks_chain" -o "$lan_dev" -j RETURN 2>/dev/null || \
+            iptables -w -I "$ks_chain" 1 -o "$lan_dev" -j RETURN 2>/dev/null || true
+        ip6tables -w -C "$ks_chain" -o "$lan_dev" -j RETURN 2>/dev/null || \
+            ip6tables -w -I "$ks_chain" 1 -o "$lan_dev" -j RETURN 2>/dev/null || true
+    fi
+
+    case "$addr" in
+        *:*)
+            ip6tables -w -C "$ks_chain" -s "$addr" ! -o "$dev" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || \
+                ip6tables -w -A "$ks_chain" -s "$addr" ! -o "$dev" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+            ;;
+        *)
+            iptables -w -C "$ks_chain" -s "$addr" ! -o "$dev" -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || \
+                iptables -w -A "$ks_chain" -s "$addr" ! -o "$dev" -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+            ;;
+    esac
+    return 0
+}
+
 vpn_core_enable_killswitch() {
     local iface="$1"
     local targets="$2"
     local ks_chain="${iface}_killswitch"
-    iptables -w -F "$ks_chain" 2>/dev/null || true
-    ip6tables -w -F "$ks_chain" 2>/dev/null || true
-    for target in $targets; do
+    # Re-create the chain and its jump: a firewall restart can wipe both, and
+    # an unattached chain would silently stop enforcing anything.
+    iptables -w -N "$ks_chain" 2>/dev/null || iptables -w -F "$ks_chain" 2>/dev/null || true
+    ip6tables -w -N "$ks_chain" 2>/dev/null || ip6tables -w -F "$ks_chain" 2>/dev/null || true
+    iptables -w -C FORWARD -j "$ks_chain" 2>/dev/null || iptables -w -I FORWARD 1 -j "$ks_chain" 2>/dev/null || true
+    ip6tables -w -C FORWARD -j "$ks_chain" 2>/dev/null || ip6tables -w -I FORWARD 1 -j "$ks_chain" 2>/dev/null || true
+    for target in $(echo "$targets" | tr ',' ' '); do
         local actual_ip=$(get_ip_from_target "$target")
+        [ -n "$actual_ip" ] || continue
+        _vpn_core_looks_like_mac "$actual_ip" && continue
+        case "$actual_ip" in
+            *[!0-9a-fA-F:./]*) continue ;;
+        esac
         case "$actual_ip" in
             *:*) ip6tables -w -A "$ks_chain" -s "$actual_ip" -j DROP || true ;;
             *)   iptables -w -A "$ks_chain" -s "$actual_ip" -j DROP || true ;;
@@ -351,8 +433,48 @@ if [ "$COUNT" -gt "$BURST" ]; then
 fi
 printf "%s|%s|0\n" "$WIN_START" "$COUNT" > "$GUARD_STATE"
 logger -t vpn-core "[$VPN_INTERFACE] Interface UP - applying routing"
-iptables -w -F $KS_CHAIN 2>/dev/null
-ip6tables -w -F $KS_CHAIN 2>/dev/null
+# Fail-closed kill switch, applied before the routing table is rebuilt so no
+# packet can fall back to the WAN during the rebuild window.
+# Managed targets may only egress through the tunnel device; the tunnel coming
+# down (no -o match) turns this into a full block by itself.
+iptables -w -N $KS_CHAIN 2>/dev/null || iptables -w -F $KS_CHAIN 2>/dev/null
+ip6tables -w -N $KS_CHAIN 2>/dev/null || ip6tables -w -F $KS_CHAIN 2>/dev/null
+iptables -w -C FORWARD -j $KS_CHAIN 2>/dev/null || iptables -w -I FORWARD 1 -j $KS_CHAIN
+ip6tables -w -C FORWARD -j $KS_CHAIN 2>/dev/null || ip6tables -w -I FORWARD 1 -j $KS_CHAIN
+for target in $(echo "$VPN_IPS" | tr ',' ' '); do
+    case "$target" in
+        ''|none) continue ;;
+        *=*) ks_ip="${target#*=}" ;;
+        *)   ks_ip="$target" ;;
+    esac
+    # Bare MAC and hostname targets carry no address to match on here.
+    case "$ks_ip" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) continue ;;
+        *[!0-9a-fA-F:./]*) continue ;;
+    esac
+    # Same-LAN traffic never leaves the router, so it cannot leak the WAN
+    # address: let it fall through to the normal forwarding policy.
+    case "$ks_ip" in
+        */*) ks_lan_dev=$(ip -4 route show "$ks_ip" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}') ;;
+        *)   ks_lan_dev=$(ip -4 route get "$ks_ip" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}') ;;
+    esac
+    if [ -n "$ks_lan_dev" ] && [ "$ks_lan_dev" != "$VPN_INTERFACE" ]; then
+        # Inserted at the head: LAN exemptions must always precede the
+        # tunnel-only rejects, whatever order the targets are listed in.
+        iptables -w -C $KS_CHAIN -o "$ks_lan_dev" -j RETURN 2>/dev/null || \
+            iptables -w -I $KS_CHAIN 1 -o "$ks_lan_dev" -j RETURN 2>/dev/null
+        ip6tables -w -C $KS_CHAIN -o "$ks_lan_dev" -j RETURN 2>/dev/null || \
+            ip6tables -w -I $KS_CHAIN 1 -o "$ks_lan_dev" -j RETURN 2>/dev/null
+    fi
+    case "$ks_ip" in
+        *:*)
+            ip6tables -w -A $KS_CHAIN -s "$ks_ip" ! -o $VPN_INTERFACE -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null
+            ;;
+        *)
+            iptables -w -A $KS_CHAIN -s "$ks_ip" ! -o $VPN_INTERFACE -j REJECT --reject-with icmp-host-prohibited 2>/dev/null
+            ;;
+    esac
+done
 ip route flush table $ROUTING_TABLE 2>/dev/null
 ip route add default dev $VPN_INTERFACE table $ROUTING_TABLE
 [ "$IPV6_SUPPORTED" = "1" ] && ip -6 route add default dev $VPN_INTERFACE table $ROUTING_TABLE
@@ -485,12 +607,24 @@ KS_CHAIN="${VPN_INTERFACE}_killswitch"
 VPN_TMP_DIR="VPN_TMP_DIR_PLACEHOLDER"
 DB_PATH="${VPN_TMP_DIR}/pbr.db"
 logger -t vpn-core "[$VPN_INTERFACE] Interface DOWN - enabling kill switch"
-iptables -w -F $KS_CHAIN 2>/dev/null
-ip6tables -w -F $KS_CHAIN 2>/dev/null
+# Re-create the chain and its jump: a firewall restart can wipe both.
+iptables -w -N $KS_CHAIN 2>/dev/null || iptables -w -F $KS_CHAIN 2>/dev/null
+ip6tables -w -N $KS_CHAIN 2>/dev/null || ip6tables -w -F $KS_CHAIN 2>/dev/null
+iptables -w -C FORWARD -j $KS_CHAIN 2>/dev/null || iptables -w -I FORWARD 1 -j $KS_CHAIN
+ip6tables -w -C FORWARD -j $KS_CHAIN 2>/dev/null || ip6tables -w -I FORWARD 1 -j $KS_CHAIN
 for target in $(echo "$VPN_IPS" | tr ',' ' '); do
     case "$target" in
-        *:*) ip6tables -w -A $KS_CHAIN -s "$target" -j DROP ;;
-        *)   iptables -w -A $KS_CHAIN -s "$target" -j DROP ;;
+        ''|none) continue ;;
+        *=*) ks_ip="${target#*=}" ;;
+        *)   ks_ip="$target" ;;
+    esac
+    case "$ks_ip" in
+        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) continue ;;
+        *[!0-9a-fA-F:./]*) continue ;;
+    esac
+    case "$ks_ip" in
+        *:*) ip6tables -w -A $KS_CHAIN -s "$ks_ip" -j DROP ;;
+        *)   iptables -w -A $KS_CHAIN -s "$ks_ip" -j DROP ;;
     esac
 done
 if [ -f "$DB_PATH" ]; then
@@ -1595,12 +1729,9 @@ vpn_core_find_interface_for_ip() {
 
 _vpn_core_tunnel_is_up() {
     local iface="$1"
-    local dev="$iface"
-    if ! ip link show "$dev" >/dev/null 2>&1; then
-        local ovpn_dev
-        ovpn_dev=$(uci -q get "openvpn.${iface}.dev" 2>/dev/null || true)
-        [ -n "$ovpn_dev" ] && dev="$ovpn_dev" || dev="tun_${iface}"
-    fi
+    local dev
+    dev=$(_vpn_core_tunnel_dev "$iface")
+    [ -n "$dev" ] || return 1
     ip link show "$dev" >/dev/null 2>&1 || return 1
     ip link show "$dev" 2>/dev/null | grep -q "state DOWN" && return 1
     return 0
@@ -1629,8 +1760,16 @@ _vpn_core_remove_client_killswitch() {
     local ip="$2"
     local mac="$3"
     local ks_chain="${iface}_killswitch"
+    local dev=""
     iptables -w -D "$ks_chain" -s "$ip" -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
     ip6tables -w -D "$ks_chain" -m mac --mac-source "$mac" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+    # Also clear the tunnel-pinned variant so a roaming client does not keep a
+    # stale rule for its previous address.
+    dev=$(_vpn_core_tunnel_dev "$iface")
+    if [ -n "$dev" ]; then
+        iptables -w -D "$ks_chain" -s "$ip" ! -o "$dev" -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+        ip6tables -w -D "$ks_chain" -s "$ip" ! -o "$dev" -j REJECT --reject-with icmp6-adm-prohibited 2>/dev/null || true
+    fi
 }
 
 vpn_core_handle_dhcp() {
@@ -1684,6 +1823,10 @@ vpn_core_handle_dhcp() {
     fi
     
     _vpn_core_remove_client_killswitch "$matched_iface" "$ip" "$mac"
+    # Keep the client fail-closed while the tunnel is up: egress is pinned to
+    # the tunnel device, so a routing or tunnel failure rejects instead of
+    # leaking to the WAN.
+    _vpn_core_allow_tunnel_egress_only "$matched_iface" "$ip"
     
     logger -t vpn-core "[$matched_iface] Applying VPN routing for $ip ($mac)"
     local pbr_ipv6_flag="$matched_ipv6"
