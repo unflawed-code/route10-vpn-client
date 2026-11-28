@@ -24,7 +24,11 @@ API_BASE = "https://www.filescan.io"
 USER_AGENT = "route10-vpn-client-ci/1.0 (+https://github.com/unflawed-code/route10-vpn-client)"
 DEFAULT_POLL_SECONDS = 15
 DEFAULT_MAX_POLLS = 40
-FAIL_VERDICTS = {"suspicious", "likely_malicious", "malicious"}
+# A malicious verdict fails the job. `suspicious` is advisory: FileScan's
+# heuristics raise it for benign behaviour such as the `chmod` calls in our own
+# installer (SH002), so it is reported but does not turn the build red.
+FAIL_VERDICTS = {"likely_malicious", "malicious"}
+ADVISORY_VERDICTS = {"suspicious"}
 
 
 class FileScanClient:
@@ -177,7 +181,7 @@ def markdown_row(path: Path, sha256: str, flow_id: str, verdict: dict[str, str])
     )
 
 
-def write_summary(rows: list[str]) -> None:
+def write_summary(rows: list[str], advisories: list[str]) -> None:
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
@@ -190,6 +194,11 @@ def write_summary(rows: list[str]) -> None:
         handle.write("| --- | --- | --- | --- | ---: | ---: |\n")
         for row in rows:
             handle.write(row + "\n")
+        if advisories:
+            handle.write(
+                "\nSuspicious verdicts are advisory: they are listed above and "
+                "annotated, but only malicious verdicts fail the job.\n"
+            )
 
 
 def main() -> int:
@@ -217,6 +226,7 @@ def main() -> int:
     client = FileScanClient(api_key)
     rows: list[str] = []
     failures: list[str] = []
+    advisories: list[str] = []
 
     for index, path in enumerate(selected):
         if index > 0 and args.inter_scan_delay > 0:
@@ -260,15 +270,27 @@ def main() -> int:
             rows.append(markdown_row(path, sha256, flow_id, verdict))
             if verdict["verdict"] in FAIL_VERDICTS:
                 failures.append(f"{path}: verdict={verdict['verdict']}, sha256={sha256}")
+            elif verdict["verdict"] in ADVISORY_VERDICTS:
+                advisory = (
+                    f"{path}: verdict={verdict['verdict']} "
+                    f"(threat={verdict['threat_level']}, confidence={verdict['confidence']}), "
+                    f"sha256={sha256}"
+                )
+                advisories.append(advisory)
+                print(f"::warning file={path.as_posix()}::{advisory}", flush=True)
 
-    write_summary(rows)
+    write_summary(rows, advisories)
+    if advisories:
+        print("FileScan.IO advisories (not failing the job):")
+        for advisory in advisories:
+            print(f"- {advisory}")
     if failures:
         print("FileScan.IO detections found:", file=sys.stderr)
         for failure in failures:
             print(f"- {failure}", file=sys.stderr)
         return 1
 
-    print("FileScan.IO scan completed without suspicious or malicious verdicts.")
+    print("FileScan.IO scan completed without malicious verdicts.")
     return 0
 
 
