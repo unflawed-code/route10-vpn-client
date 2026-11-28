@@ -122,7 +122,11 @@ def poll_report(
         payload = client.get_report(flow_id)
         state = str(payload.get("state") or "")
         all_finished = bool(payload.get("allFinished"))
-        if all_finished or state == "finished":
+        # `allFinished` can flip before the report carries a verdict: the scan
+        # tasks are done but finalVerdict is still being assembled. Accept a
+        # finished flow only once it actually returned a report, otherwise a
+        # slow report is misreported as a detection.
+        if (all_finished or state == "finished") and report_verdicts(payload):
             return payload
 
         pause = payload.get("pollPause")
@@ -220,12 +224,25 @@ def main() -> int:
         sha256 = sha256_file(path)
         print(f"Submitting {path} ({path.stat().st_size} bytes, sha256={sha256})", flush=True)
         flow_id = client.scan_file(path)
-        payload = poll_report(
-            client,
-            flow_id,
-            poll_seconds=args.poll_seconds,
-            max_polls=args.max_polls,
-        )
+        try:
+            payload = poll_report(
+                client,
+                flow_id,
+                poll_seconds=args.poll_seconds,
+                max_polls=args.max_polls,
+            )
+        except RuntimeError as exc:
+            print(str(exc), file=sys.stderr)
+            failures.append(f"{path}: {exc}")
+            rows.append(
+                markdown_row(
+                    path,
+                    sha256,
+                    flow_id,
+                    {"verdict": "unknown", "threat_level": "", "confidence": ""},
+                )
+            )
+            continue
         verdicts = report_verdicts(payload)
         if not verdicts:
             failures.append(f"{path}: no report verdict returned for flow {flow_id}")

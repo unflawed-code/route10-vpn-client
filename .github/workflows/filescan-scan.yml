@@ -31,7 +31,14 @@ jobs:
           else
             base_ref="${{ github.event.before }}"
             if [[ -z "$base_ref" || "$base_ref" =~ ^0+$ ]]; then
-              base_ref="$(git rev-list --max-parents=0 HEAD)"
+              # A tag push has no "before" commit, and an all-zero value means a
+              # new branch. Diff against the pushed commit's parent so a release
+              # scans its own changes instead of the whole history.
+              if git rev-parse --verify -q 'HEAD^' >/dev/null; then
+                base_ref="$(git rev-parse 'HEAD^')"
+              else
+                base_ref="$(git rev-list --max-parents=0 HEAD)"
+              fi
             fi
           fi
 
